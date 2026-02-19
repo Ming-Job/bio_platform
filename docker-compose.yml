@@ -1,0 +1,72 @@
+# docker-compose.yml（移除 version 行）
+
+services:
+  sandbox-python:
+    build:
+      context: ./docker/python-sandbox
+      dockerfile: Dockerfile
+    container_name: python-sandbox
+    # 安全配置
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # 网络配置
+    network_mode: "none"
+    # 卷挂载
+    volumes:
+      - D:/docker_share:/tmp/sandbox:rw
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    # 环境变量
+    environment:
+      - TASK_ID=${TASK_ID:-default}
+    # 重启策略
+    restart: unless-stopped
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  sandbox-r:
+    build:
+      context: ./docker/r-sandbox
+      dockerfile: Dockerfile
+    container_name: r-sandbox
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    network_mode: "none"
+    volumes:
+      - D:/docker_share:/tmp/sandbox:rw
+      - r-temp-data:/tmp/r_temp
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: '0.75'
+        reservations:
+          memory: 384M
+          cpus: '0.5'
+    environment:
+      - TASK_ID=${TASK_ID:-default}
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  r-temp-data:
+    driver: local
