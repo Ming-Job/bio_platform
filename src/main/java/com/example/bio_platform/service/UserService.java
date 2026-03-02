@@ -21,7 +21,7 @@ public interface UserService extends IService<User> {
     /**
      * 用户登录
      */
-    LoginResponse login(LoginRequest request);
+        LoginResponse login(LoginRequest request);
 
     /**
      * 用户注册
