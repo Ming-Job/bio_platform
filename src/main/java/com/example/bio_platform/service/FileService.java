@@ -68,4 +68,9 @@ public interface FileService extends IService<File> {
      */
     ResponseEntity<Resource> downloadFile(Long fileId, Long userId);
 
+    // 🌟 新增：获取用户的所有文件（包含上传的和分析产出的）
+    List<File> getAllUserFiles(Long userId, Long projectId, String fileType, String status);
+
+
+    Map<Long, Map<String, Number>> getProjectFileStatsMap(Long userId);
 }

@@ -6,11 +6,9 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.example.bio_platform.config.FileUploadProperties;
 import com.example.bio_platform.entity.File;
-import com.example.bio_platform.entity.FileMetadata;
 import com.example.bio_platform.entity.FileUpload;
 import com.example.bio_platform.entity.Project;
 import com.example.bio_platform.mapper.FileMapper;
-import com.example.bio_platform.mapper.FileMetadataMapper;
 import com.example.bio_platform.mapper.FileUploadMapper;
 import com.example.bio_platform.mapper.ProjectMapper;
 import com.example.bio_platform.service.FileService;
@@ -45,16 +43,15 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
 
     private final FileMapper fileMapper;
     private final FileUploadMapper fileUploadMapper;
-    private final FileMetadataMapper fileMetadataMapper;
     private final ProjectMapper projectMapper;
     private final FileUploadProperties fileUploadProperties;
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public FileUpload uploadFile(MultipartFile multipartFile, Long userId, Long projectId,
                                  String description, Map<String, Object> tags) {
 
         try {
-            // 1. 检查配置是否注入
             if (fileUploadProperties == null) {
                 log.error("FileUploadProperties 配置未注入！");
                 throw new RuntimeException("系统配置错误，请联系管理员");
@@ -66,56 +63,75 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
                 log.warn("配置文件基础目录为空，使用默认值: {}", baseDir);
             }
 
-            // 2. 验证文件 (假设已校验大小和格式)
             validateFile(multipartFile);
 
-            // 3. 提取基本信息
             String originalName = multipartFile.getOriginalFilename();
             String fileExt = getFileExtension(originalName);
             String fileType = determineFileType(fileExt);
             long fileSize = multipartFile.getSize();
             LocalDateTime now = LocalDateTime.now();
 
-            // ==================== 核心优化部分开始 ====================
-
-            // 4. 【优化】先计算 MD5（直接获取一次流进行计算，避免使用 reset）
             String md5Hash;
             try (InputStream md5Stream = multipartFile.getInputStream()) {
                 md5Hash = DigestUtils.md5DigestAsHex(md5Stream);
             }
 
-            // 5. 【优化】拦截重复文件（在落盘前拦截，彻底杜绝垃圾物理文件）
-            File existingFile = fileMapper.selectByMd5AndUserId(md5Hash, userId);
-            if (existingFile != null && existingFile.getUserId().equals(userId)) {
-                log.info("文件已存在，触发秒传机制: {}", existingFile.getOriginalName());
-
-                // 创建上传记录
-                FileUpload uploadRecord = createUploadRecord(existingFile, userId, fileSize, now);
-
-                // 塞入前端提示标记（温和提示方案）
-                uploadRecord.setIsDuplicate(true);
-                uploadRecord.setMessage("文件已存在，已为您极速秒传。");
-
-                return uploadRecord; // 直接返回，完全不执行后续的磁盘 I/O 操作
+            // ==========================================
+            // 🌟 1. 严格查重：防止用户在“同一个课题”下重复传同一个文件
+            // ==========================================
+            LambdaQueryWrapper<File> dupQuery = new LambdaQueryWrapper<>();
+            dupQuery.eq(File::getUserId, userId)
+                    .eq(File::getMd5Hash, md5Hash)
+                    .ne(File::getStatus, "deleted");
+            if (projectId != null) {
+                dupQuery.eq(File::getProjectId, projectId);
+            } else {
+                dupQuery.isNull(File::getProjectId);
+            }
+            if (fileMapper.selectCount(dupQuery) > 0) {
+                FileUpload dupRecord = new FileUpload();
+                dupRecord.setIsDuplicate(true);
+                dupRecord.setStatus("error");
+                dupRecord.setMessage("提示：该文件已存在于当前课题中，无需重复上传。");
+                return dupRecord;
             }
 
-            // 6. 生成唯一标识和存储路径（只有确认为新文件，才生成路径）
+            // ==========================================
+            // 🌟 2. 物理秒传：去全库找有没有这个 MD5 的物理文件
+            // ==========================================
+            File existingPhysicalFile = fileMapper.selectByMd5AndUserId(md5Hash, userId);
+
+            // 🌟 核心修复：为了不触发数据库的 uk_stored_name 唯一约束，永远生成全新的 UUID 作为 storedName
             String storedName = UUID.randomUUID().toString() + fileExt;
-            String relativePath = String.format("%d/%d/%02d/%02d/%s",
-                    userId, now.getYear(), now.getMonthValue(), now.getDayOfMonth(), storedName);
-            Path filePath = Paths.get(baseDir, relativePath);
+            String relativePath;
+            boolean isPhysicalUploadNeeded = true; // 是否需要真的把文件写入 D 盘
 
-            // 7. 确保目录存在
-            Files.createDirectories(filePath.getParent());
-
-            // 8. 【优化】真正的物理落盘（重新获取一次流写入磁盘）
-            try (InputStream saveStream = multipartFile.getInputStream()) {
-                Files.copy(saveStream, filePath);
+            if (existingPhysicalFile != null && existingPhysicalFile.getStoragePath() != null) {
+                // 找到物理文件了！直接复用它的相对路径，省下 D 盘空间
+                log.info("【极速秒传】发现物理复用文件: {}，直接复用路径: {}", originalName, existingPhysicalFile.getStoragePath());
+                relativePath = existingPhysicalFile.getStoragePath(); // 物理路径用老的！
+                isPhysicalUploadNeeded = false;
+            } else {
+                // 没找到，老老实实生成新路径
+                relativePath = String.format("%d/%d/%02d/%02d/%s",
+                        userId, now.getYear(), now.getMonthValue(), now.getDayOfMonth(), storedName);
             }
 
-            // ==================== 核心优化部分结束 ====================
+            // ==========================================
+            // 🌟 3. 物理落盘 (如果是秒传，这步直接跳过，速度极快！)
+            // ==========================================
+            if (isPhysicalUploadNeeded) {
+                Path filePath = Paths.get(baseDir, relativePath);
+                Files.createDirectories(filePath.getParent());
+                try (InputStream saveStream = multipartFile.getInputStream()) {
+                    Files.copy(saveStream, filePath);
+                }
+                log.info("新文件物理落盘成功: {} -> {}", originalName, relativePath);
+            }
 
-            // 9. 获取项目信息（用于返回给前端）
+            // ==========================================
+            // 🌟 4. 逻辑入库：不管是不是秒传，都要在数据库里新建一条记录！
+            // ==========================================
             String projectName = null;
             if (projectId != null) {
                 Project project = projectMapper.selectById(projectId);
@@ -124,36 +140,36 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
                 }
             }
 
-            // 10. 保存新文件信息到数据库
-            File file = new File()
+            File newFileRecord = new File()
                     .setOriginalName(originalName)
                     .setStoredName(storedName)
                     .setFileType(fileType)
                     .setFileExt(fileExt)
                     .setSizeBytes(fileSize)
-                    .setStoragePath(relativePath)
+                    .setStoragePath(relativePath) // 如果是秒传，这里存的就是复用的路径
                     .setMd5Hash(md5Hash)
                     .setUserId(userId)
-                    .setProjectId(projectId)
+                    .setProjectId(projectId)      // 绑定到新的课题下！
                     .setStatus("ready")
                     .setDescription(description)
                     .setUploadTime(now)
-                    .setUpdateTime(now);
+                    .setUpdateTime(now)
+                    .setFileSource("upload");
 
-            this.save(file);
-            log.info("新文件物理落盘并上传成功: {} -> {}", originalName, relativePath);
+            this.save(newFileRecord); // 🌟 插入全新的数据库记录
 
-            // 11. 设置计算字段并返回
-            file.setFormattedSize(formatFileSize(fileSize));
-            file.setDownloadUrl(fileUploadProperties.getBaseUrl() + "/download/" + file.getId());
-            file.setProjectName(projectName);
+            newFileRecord.setFormattedSize(formatFileSize(fileSize));
+            newFileRecord.setDownloadUrl(fileUploadProperties.getBaseUrl() + "/download/" + newFileRecord.getId());
+            newFileRecord.setProjectName(projectName);
 
-            // 创建上传记录并明确标识为新上传
-            FileUpload newUploadRecord = createUploadRecord(file, userId, fileSize, now);
-            newUploadRecord.setIsDuplicate(false);
-            newUploadRecord.setMessage("上传成功！");
+            // ==========================================
+            // 🌟 5. 返回成功记录给前端
+            // ==========================================
+            FileUpload uploadRecord = createUploadRecord(newFileRecord, userId, fileSize, now);
+            uploadRecord.setIsDuplicate(false); // 对前端来说，这是一次成功的全新上传
+            uploadRecord.setStatus("completed");
 
-            return newUploadRecord;
+            return uploadRecord;
 
         } catch (IOException e) {
             log.error("文件流读取或写入失败", e);
@@ -174,11 +190,9 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
                 .setEndTime(LocalDateTime.now());
 
         fileUploadMapper.insert(fileUpload);
-
-        // 设置上传记录的计算字段
         fileUpload.setFormattedBytesUploaded(formatFileSize(fileSize));
         fileUpload.setFormattedBytesTotal(formatFileSize(fileSize));
-        fileUpload.setFile(file); // 关联文件信息
+        fileUpload.setFile(file);
 
         return fileUpload;
     }
@@ -188,17 +202,12 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
         List<FileUpload> results = new ArrayList<>();
         for (MultipartFile file : files) {
             try {
-                // 调用优化后的单文件上传 如果重复会返回秒传标识，如果成功会返回新对象
                 FileUpload result = uploadFile(file, userId, projectId, description, null);
                 results.add(result);
             } catch (Exception e) {
                 log.error("文件上传失败: {}", file.getOriginalFilename(), e);
-
-                // 构造一个带有错误信息的返回对象，让前端知道死在哪了
                 FileUpload failedResult = new FileUpload();
-                failedResult.setStatus("error");  // 前端根据这个状态判断失败
-
-                // 提取异常信息传递给前端
+                failedResult.setStatus("error");
                 failedResult.setMessage(e.getMessage() != null ? e.getMessage(): "上传过程中发生系统异常");
                 results.add(failedResult);
             }
@@ -225,15 +234,15 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
             queryWrapper.ne(File::getStatus, "deleted");
         }
 
+        // 过滤掉系统生成的产出物
+        queryWrapper.ne(File::getFileSource, "generate");
+
         queryWrapper.orderByDesc(File::getUploadTime);
         List<File> files = this.list(queryWrapper);
 
-        // 设置计算字段
         for (File file : files) {
             file.setFormattedSize(formatFileSize(file.getSizeBytes()));
             file.setDownloadUrl(fileUploadProperties.getBaseUrl() + "/download/" + file.getId());
-
-            // 如果需要项目名称，可以单独查询
             if (file.getProjectId() != null) {
                 Project project = projectMapper.selectById(file.getProjectId());
                 if (project != null) {
@@ -241,7 +250,6 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
                 }
             }
         }
-
         return files;
     }
 
@@ -254,11 +262,8 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
         File file = this.getOne(queryWrapper);
 
         if (file != null) {
-            // 设置计算字段
             file.setFormattedSize(formatFileSize(file.getSizeBytes()));
             file.setDownloadUrl(fileUploadProperties.getBaseUrl() + "/download/" + file.getId());
-
-            // 获取项目信息
             if (file.getProjectId() != null) {
                 Project project = projectMapper.selectById(file.getProjectId());
                 if (project != null) {
@@ -266,7 +271,6 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
                 }
             }
         }
-
         return file;
     }
 
@@ -277,75 +281,51 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
         if (file == null) {
             throw new RuntimeException("文件不存在或无权访问");
         }
-
-        // 逻辑删除：更新状态为deleted
-        // 注意：数据库中没有delete_time字段，这里只更新状态
         file.setStatus("deleted");
         file.setUpdateTime(LocalDateTime.now());
-
         return this.updateById(file);
     }
 
     @Override
     public Map<String, Object> getFileStats(Long userId) {
         Map<String, Object> stats = new HashMap<>();
-
-        // 获取文件类型统计
         List<Map<String, Object>> typeStats = fileMapper.countByFileType(userId);
         stats.put("typeStats", typeStats);
-
-        // 获取总存储空间使用量
         Long totalStorage = fileMapper.selectTotalStorageByUserId(userId);
         stats.put("totalStorage", totalStorage);
         stats.put("formattedTotalStorage", formatFileSize(totalStorage));
-
-        // 获取文件总数
         LambdaQueryWrapper<File> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(File::getUserId, userId)
-                .ne(File::getStatus, "deleted");
+        queryWrapper.eq(File::getUserId, userId).ne(File::getStatus, "deleted");
         Long totalFiles = this.count(queryWrapper);
         stats.put("totalFiles", totalFiles);
-
         return stats;
     }
 
     @Override
     public String getFilePreviewContent(Long fileId, Long userId) {
-        // 1. 复现现有的查询方法，确保文件属于该用户且未被删除
         File file = getFileDetail(fileId, userId);
         if (file == null){
             throw new RuntimeException("文件不存在或无权访问");
         }
         String ext = file.getFileExt().toLowerCase();
-
-        // 2. 拦截纯二进制文件（生信文件中的 bam 和 bai 无法直接预览）
         if (ext.equals(".bam") || ext.equals(".bai")){
             throw new RuntimeException("二进制比对文件暂不支持在线预览，请下载后查看");
         }
-
-        // 3. 组装物理路径
         String baseDir = fileUploadProperties.getBaseDir();
         if (baseDir == null || baseDir.trim().isEmpty()){
             baseDir = "./bio_uploads/files";
         }
         Path filePath = Paths.get(baseDir, file.getStoragePath());
-
         if (!Files.exists(filePath)){
             throw new RuntimeException("物理文件已丢失");
         }
-
-        // 4. 流式读取文件前 100 行
         StringBuilder contentBuilder = new StringBuilder();
-        int maxLines = 100; // 限制预览行数，防止OOM
-
+        int maxLines = 100;
         try{
             InputStream fileStream = Files.newInputStream(filePath);
-
-            // 如果是 .gz 结尾的压缩文件, 自动挂载 GZIP 解压流
             if (ext.endsWith(".gz")){
                 fileStream =  new GZIPInputStream(fileStream);
             }
-
             try(BufferedReader reader = new BufferedReader(new InputStreamReader(fileStream))){
                 String line;
                 int lineCount = 0;
@@ -353,55 +333,45 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
                     contentBuilder.append(line).append("\n");
                     lineCount++;
                 }
-
                 if (line != null){
                     contentBuilder.append("\n\n... (文件体积过大，为保证系统性能，仅展示前)").append(maxLines).append(" 行) ...");
                 }
             }
-
             return contentBuilder.toString();
-
         } catch (IOException e) {
             log.error("读取预览文件失败: {}", file.getOriginalName(), e);
             throw new RuntimeException("读取文件内容失败: " + e.getMessage());
         }
-
     }
 
-    // 获取最近上传的文件
     @Override
     public List<File> getRecentlyUploadedFiles(Long userId, int limit, Long projectId) {
-        // 参数校验
         if (userId == null) {
             throw new IllegalArgumentException("用户ID不能为空");
         }
-
         if (limit <= 0) {
-            limit = 10; // 默认限制10个文件
+            limit = 10;
         }
 
-        // 构建查询条件
         LambdaQueryWrapper<File> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(File::getUserId, userId)
-                .ne(File::getStatus, "deleted"); // 排除已删除的文件
+                .ne(File::getStatus, "deleted")
+                // 坚决剔除系统生成的产出物，只展示真实的上传文件
+                .ne(File::getFileSource, "generate");
 
-        // 如果指定了项目ID，则添加项目过滤条件
+        // 🌟 按需求：在项目页进来的只查该项目；在全局大厅则不加限制查所有
         if (projectId != null) {
             queryWrapper.eq(File::getProjectId, projectId);
         }
 
-        // 按上传时间降序排列，获取最近的文件
         queryWrapper.orderByDesc(File::getUploadTime)
-                .last("LIMIT " + limit); // 限制返回数量
+                .last("LIMIT " + limit);
 
         List<File> files = this.list(queryWrapper);
 
-        // 设置计算字段
         for (File file : files) {
             file.setFormattedSize(formatFileSize(file.getSizeBytes()));
             file.setDownloadUrl(fileUploadProperties.getBaseUrl() + "/download/" + file.getId());
-
-            // 设置项目名称（如果需要）
             if (file.getProjectId() != null) {
                 Project project = projectMapper.selectById(file.getProjectId());
                 if (project != null) {
@@ -409,108 +379,91 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
                 }
             }
         }
-
         return files;
     }
 
     @Override
     public ResponseEntity<Resource> downloadFile(Long fileId, Long userId) {
-        // 1. 验证权限并获取文件记录 (复用你写好的方法)
         File file = getFileDetail(fileId, userId);
         if (file == null) {
             throw new RuntimeException("文件不存在或无权访问");
         }
-
-        // 2. 组装物理路径
         String baseDir = fileUploadProperties.getBaseDir();
         if (baseDir == null || baseDir.trim().isEmpty()) {
             baseDir = "./bio_uploads/files";
         }
         Path filePath = Paths.get(baseDir, file.getStoragePath());
+        Resource resource;
+        String originalName = file.getOriginalName();
 
-        // 3. 检查物理文件是否存在
         if (!Files.exists(filePath)) {
-            log.error("尝试下载丢失的文件: {}", filePath);
-            throw new RuntimeException("服务器上的物理文件已丢失");
+            log.warn("物理文件丢失或为模拟任务产出物，触发降级下载: {}", filePath);
+            String mockContent = "【Bio-OS 系统提示】\n" +
+                    "=========================================\n" +
+                    "这是一份模拟计算产出的生信分析数据。\n" +
+                    "因为目前处于模拟调度阶段，真正的文件并未在服务器物理磁盘上生成。\n\n" +
+                    "请求的文件名：" + originalName + "\n" +
+                    "归属任务/文件ID：" + fileId + "\n" +
+                    "=========================================\n" +
+                    "请在接入真实算力集群后，再获取真实结果！";
+            resource = new org.springframework.core.io.ByteArrayResource(mockContent.getBytes(StandardCharsets.UTF_8));
+        } else {
+            try {
+                resource = new UrlResource(filePath.toUri());
+            } catch (Exception e) {
+                log.error("物理文件流转换失败", e);
+                throw new RuntimeException("文件读取异常");
+            }
         }
 
         try {
-            // 4. 将物理文件转换为 Spring 的 Resource 对象 (流式读取的核心)
-            Resource resource = new UrlResource(filePath.toUri());
-
-            // 5. 解决下载时文件名（尤其是中文）变乱码或变下划线的问题
-            String originalName = file.getOriginalName();
             String encodedFileName = URLEncoder.encode(originalName, StandardCharsets.UTF_8.toString())
-                    .replaceAll("\\+", "%20"); // 修复空格被转成加号的Bug
-
-            // 6. 构建并返回包含附件下载 Header 的响应
+                    .replaceAll("\\+", "%20");
             return ResponseEntity.ok()
-                    // 标记为二进制流
                     .contentType(MediaType.APPLICATION_OCTET_STREAM)
-                    // 告诉浏览器这是一个附件，并告知应该保存的文件名
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + encodedFileName + "\"")
-                    // 返回流对象
                     .body(resource);
-
         } catch (Exception e) {
-            log.error("文件下载失败", e);
+            log.error("文件下载响应构建失败", e);
             throw new RuntimeException("文件打包下载失败: " + e.getMessage());
         }
     }
 
-
-    // 辅助方法
     private void validateFile(MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("文件不能为空");
         }
-
         String filename = file.getOriginalFilename();
         if (!StringUtils.hasText(filename)) {
             throw new IllegalArgumentException("文件名不能为空");
         }
-
-        // 检查文件扩展名
         String fileExt = getFileExtension(filename).toLowerCase();
         List<String> allowedExtensions = fileUploadProperties.getAllowedExtensions();
-
         if (allowedExtensions != null && !allowedExtensions.isEmpty()) {
             if (!allowedExtensions.contains(fileExt)) {
                 throw new IllegalArgumentException("不支持的文件类型: " + fileExt +
                         "，允许的类型: " + allowedExtensions);
             }
         }
-
-        // 检查文件大小
         if (file.getSize() > fileUploadProperties.getMaxFileSize()) {
             throw new IllegalArgumentException("文件大小超过限制: " + file.getSize() +
                     "，最大允许: " + fileUploadProperties.getMaxFileSize());
         }
     }
 
-    /**
-     * 智能获取文件扩展名（支持生信领域的双后缀，如 .fa.gz）
-     */
     private String getFileExtension(String filename) {
         if (filename == null || filename.trim().isEmpty()) {
             return "";
         }
-
         String lowerFilename = filename.toLowerCase();
-
-        // 1. 优先匹配生信领域常见的双后缀 (你可以根据需要增删)
         String[] doubleExtensions = {
-                ".fastq.gz", ".fq.gz", ".fasta.gz", ".fa.gz", ".tar.gz"
+                ".fastq.gz", ".fq.gz", ".fasta.gz", ".fa.gz", ".tar.gz", ".pdb.gz"
         };
-
         for (String ext : doubleExtensions) {
             if (lowerFilename.endsWith(ext)) {
-                // 截取真实的原始后缀，保留原有大小写
                 return filename.substring(filename.length() - ext.length());
             }
         }
-
-        // 2. 如果不是双后缀，退化为常规的单后缀截取
         int lastDot = filename.lastIndexOf(".");
         return lastDot == -1 ? "" : filename.substring(lastDot);
     }
@@ -521,7 +474,11 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
             return "fastq";
         } else if (fileExt.contains("fasta") || fileExt.contains("fa")) {
             return "fasta";
-        } else if (fileExt.contains("bam")) {
+        }else if (fileExt.contains("pdb")) {
+            return "pdb";
+        } else if (fileExt.contains("sdf")) {
+            return "sdf";
+        }else if (fileExt.contains("bam")) {
             return "bam";
         } else if (fileExt.contains("sam")) {
             return "sam";
@@ -535,24 +492,65 @@ public class FileServiceImpl extends ServiceImpl<FileMapper, File> implements Fi
         return "other";
     }
 
-    // 格式化文件大小
     private String formatFileSize(Long sizeBytes) {
         if (sizeBytes == null || sizeBytes == 0) {
             return "0 B";
         }
-
         final String[] units = {"B", "KB", "MB", "GB", "TB"};
         int digitGroups = (int) (Math.log10(sizeBytes) / Math.log10(1024));
-
         return String.format("%.2f %s", sizeBytes / Math.pow(1024, digitGroups), units[digitGroups]);
     }
 
+    @Override
+    public List<File> getAllUserFiles(Long userId, Long projectId, String fileType, String status) {
+        LambdaQueryWrapper<File> queryWrapper = new LambdaQueryWrapper<>();
+        queryWrapper.eq(File::getUserId, userId);
 
+        if (projectId != null) {
+            queryWrapper.eq(File::getProjectId, projectId);
+        }
+        if (StringUtils.hasText(fileType)) {
+            queryWrapper.eq(File::getFileType, fileType);
+        }
+        if (StringUtils.hasText(status)) {
+            queryWrapper.eq(File::getStatus, status);
+        } else {
+            queryWrapper.ne(File::getStatus, "deleted");
+        }
 
+        // 🚀 纯净的全量查询，不加 .ne(FileSource, "generate") 限制！
+        queryWrapper.orderByDesc(File::getUploadTime);
+        List<File> files = this.list(queryWrapper);
 
+        for (File file : files) {
+            file.setFormattedSize(formatFileSize(file.getSizeBytes()));
+            file.setDownloadUrl(fileUploadProperties.getBaseUrl() + "/download/" + file.getId());
+            if (file.getProjectId() != null) {
+                Project project = projectMapper.selectById(file.getProjectId());
+                if (project != null) {
+                    file.setProjectName(project.getName());
+                }
+            }
+        }
+        return files;
+    }
 
+    @Override
+    public Map<Long, Map<String, Number>> getProjectFileStatsMap(Long userId) {
+        List<Map<String, Object>> list = baseMapper.countFileStatsGroupByProject(userId);
 
+        Map<Long, Map<String, Number>> statsMap = new HashMap<>();
+        for (Map<String, Object> map : list) {
+            Long projectId = ((Number) map.get("project_id")).longValue();
+            Integer count = ((Number) map.get("file_count")).intValue();
+            Long totalSize = map.get("total_size") != null ? ((Number) map.get("total_size")).longValue() : 0L;
 
+            Map<String, Number> innerMap = new HashMap<>();
+            innerMap.put("fileCount", count);
+            innerMap.put("totalSize", totalSize);
 
-
+            statsMap.put(projectId, innerMap);
+        }
+        return statsMap;
+    }
 }

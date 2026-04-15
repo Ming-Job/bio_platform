@@ -61,6 +61,19 @@ public class FileController {
         return ResponseEntity.ok(files);
     }
 
+    @GetMapping("/all")
+    @ApiOperation("获取全量文件列表（专供数据舱使用，包含分析产出物）")
+    public ResponseEntity<List<File>> getAllFileList(
+            @ApiParam(value = "用户ID", required = true) @RequestParam Long userId,
+            @ApiParam(value = "项目ID") @RequestParam(required = false) Long projectId,
+            @ApiParam(value = "文件类型") @RequestParam(required = false) String fileType,
+            @ApiParam(value = "文件状态") @RequestParam(required = false) String status) {
+
+        // 🚀 调用刚刚写的全量查询服务
+        List<File> files = fileService.getAllUserFiles(userId, projectId, fileType, status);
+        return ResponseEntity.ok(files);
+    }
+
     @GetMapping("/{fileId}")
     @ApiOperation("获取文件详情")
     public ResponseEntity<File> getFileDetail(

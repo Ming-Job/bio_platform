@@ -84,4 +84,5 @@ public class Project implements Serializable {
     @ApiModelProperty(value = "项目分析任务数量", example = "3")
     @TableField(exist = false)
     private Integer analysisTaskCount = 0;
+
 }

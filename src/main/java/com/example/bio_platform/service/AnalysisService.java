@@ -1,99 +1,199 @@
 package com.example.bio_platform.service;
 
+
+
+import com.fasterxml.jackson.databind.JsonNode;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
+
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
-import java.util.*;
+
+
+
+import java.io.BufferedReader;
+
+import java.io.InputStreamReader;
+
+import java.io.OutputStream;
+
+import java.net.HttpURLConnection;
+
+import java.net.URL;
+
+import java.util.ArrayList;
+
+import java.util.HashMap;
+
+import java.util.List;
+
+import java.util.Map;
+
+
 
 @Service
+
 public class AnalysisService {
 
-    // 1. 注入 SiliconFlow 的配置
-    @Value("${siliconflow.api.key}")
-    private String apiKey;
 
-    @Value("${siliconflow.api.url}")
+
+    @Value("${ai.deepseek.api-url}")
+
     private String apiUrl;
 
-    @Value("${siliconflow.api.model}")
-    private String modelName; // 新注入的模型名
+
+
+    @Value("${ai.deepseek.api-key}")
+
+    private String apiKey;
+
+
+
+    @Value("${ai.deepseek.model}")
+
+    private String modelName;
+
+
 
     private static final String SYSTEM_PROMPT = """
-            你是一个为“生物信息学在线分析平台”生成可执行代码的AI助手。用户通过平台提交分析请求，平台会为每个请求分配唯一的`task_id`。你的核心职责是生成**安全、可运行、且能与平台后端无缝集成**的代码。
-                        
-            ### 🔧【平台运行环境与集成规范】
-            1.  **执行环境**：代码将在只读、无网络连接的Docker容器（Python 3.9）中运行。
-            2.  **任务标识**：每个任务都有唯一的`task_id`（如 `python_1768462848303_e489b891`），代码**必须**使用此ID来命名输出文件。
-            3.  **文件输出**：所有生成的图表**必须**保存到容器的 `/tmp/sandbox/` 目录，该目录与主机共享。
-            4.  **结果返回**：系统会自动读取此目录下以`task_id`开头的图片文件，并返回给用户。不符合此命名规则的文件将被忽略。
-                        
-            ### ⚠️【代码生成强制规则 (必须严格遵守)】
-            #### A. 关于任务ID (`task_id`) 的使用
-            - **规则A1**：代码**必须**定义一个变量来接收任务ID。**禁止**在代码中硬编码任何示例ID（如`python_123456`）。
-            - **规则A2**：优先通过 `os.environ.get(‘TASK_ID‘)` 从环境变量获取。其次，可作为脚本的**命令行参数**（`sys.argv[1]`）或**主函数的参数**传入。
-            - **规则A3**：保存图片时，使用命令 plt.savefig(f'/tmp/sandbox/{task_id}.png', dpi=150)。这是系统捕获文件的唯一依据。
-        
-                        
-            #### B. 关于可视化与文件输出
-            - **规则B1**：绘制图时，变量名必须用英文，**绝对禁止**使用中文的变量名。
-            - **规则B2**：**绝对禁止**使用 `plt.show()`、`display()` 等任何会尝试弹出窗口或阻塞进程的交互命令。
-            - **规则B3**：在 `plt.savefig()` 之后，**必须**调用 `plt.close()` 以释放内存。
-            - **规则B4**：生成的图片应具有适当的DPI（建议150）和布局（建议使用 `plt.tight_layout()`）。
-                        
-            #### C. 关于代码结构与安全性
-            - **规则C1**：代码应包含基本的错误处理（如检查输入数据格式、捕获异常）。
-            - **规则C2**：避免使用绝对路径引用主机文件。如需示例数据，请在代码内用代码（如`np.random`）生成。
-            - **规则C3**：在文件顶部以注释形式声明主要依赖库及其推荐版本（如 `# Requires: pandas>=1.4, scikit-learn>=1.0`）。
-            
-            
+            你是一个为“生物信息学云原生分析平台”生成生产级代码的资深生信工程师。
+            你的代码将在严格的 Linux Docker 沙箱中静默执行，必须 100% 严格遵守以下指令：
+
+            ### 1. ⚡【性能指令：严禁使用 apply】
+            - **禁止逻辑**：严禁使用 `df.apply(..., axis=1)` 或 `for` 循环进行统计检验！这会导致大数据量下处理极慢，且极易因数据类型退化为 object 引发崩溃。
+            - **必须做法**：必须使用 **True Vectorization (矩阵运算)**。先将组别切片为独立的 DataFrame/Numpy 矩阵，然后一次性传入 `stats.ttest_ind(matrix1, matrix2, axis=1)`。
+
+            ### 2. 🛡️【类型安全与隔离】
+            - **数值强制转换**：在进行任何数学运算前，必须先执行 `data_matrix = df.iloc[:, 1:].apply(pd.to_numeric, errors='coerce').astype(float)`。
+            - **计算隔离**：确保传给统计函数的参数是纯粹的 float64 矩阵，严禁混入 GeneID 等字符串列。
+            - **维度对齐**：进行样本维度分析（如 PCA）时，必须确保数值矩阵的样本数与分组标签长度完全一致（注意排除 ID 列）。
+            - **零值处理**：必须对数值矩阵执行 `.fillna(1e-5)`，防止 NaN 或 Inf 破坏后续 Log 运算。
+
+            ### 3. 📁【IO 与路径法则】
+            - **绝对路径**：数据读取路径强制锁定在 `/tmp/sandbox/{filename}`。不准瞎猜路径。
+            - **标识符获取**：代码开头必须通过 `import os; task_id = os.environ.get('TASK_ID', 'default_task')` 获取任务 ID。严禁硬编码伪造 ID。
+
+            ### 4. 📊【可视化规范：全英文与标注】
+            - **全英文强制**：Linux 沙箱无中文字体。Title, Labels, Legend, Annotations 严禁出现中文字符！
+            - **智能标注**：必须筛选出 P 值最小（或最显著）的前 5 个基因，并使用 `plt.text` 在图中标注其 ID。
+            - **静默出图**：严禁使用 `plt.show()`。
+            - **保存规范**：必须使用且只能使用 `plt.savefig(f'/tmp/sandbox/{task_id}.png', dpi=300, bbox_inches='tight')`。
+            - **内存释放**：保存完毕后，必须紧跟 `plt.close()` 释放内存。
+
+            ### 5. 🛠️【输出协议：纯净脚本】
+            - **无围栏输出**：只输出纯净 Python 源码，严禁输出 Markdown 格式围栏（如不要输出 ```python 或 ```）。
+            - **禁止废话**：不要输出任何前置解释文字或后续代码建议。
             """;
 
 
 
+    /**
 
-    public String generateAnalysisCode(String userQuestion) {
-        RestTemplate restTemplate = new RestTemplate();
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBearerAuth(apiKey); // 设置 API Key
+     * @param userQuestion 用户需求
 
-        // 3. 构建请求消息
-        Map<String, Object> systemMsg = Map.of("role", "system", "content", SYSTEM_PROMPT);
-        Map<String, Object> userMsg = Map.of("role", "user", "content", userQuestion);
-        List<Map<String, Object>> messages = Arrays.asList(systemMsg, userMsg);
+     * @param attachedFileName 挂载的文件名（可选）
 
-        // 4. 构建请求体，使用配置的模型名
-        Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("model", modelName); // 关键：使用从配置读取的模型名
-        requestBody.put("messages", messages);
-        requestBody.put("temperature", 0.2); // 保持低随机性以生成稳定代码
+     */
 
-        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+    public String generateAnalysisCode(String userQuestion, String attachedFileName) {
 
         try {
-            // 5. 发送请求到 SiliconFlow
-            ResponseEntity<Map> response = restTemplate.exchange(
-                    apiUrl,
-                    HttpMethod.POST,
-                    entity,
-                    Map.class
-            );
 
-            // 6. 解析响应（结构与大模型标准接口一致）
-            if (response.getBody() != null && response.getBody().containsKey("choices")) {
-                List<Map<String, Object>> choices = (List<Map<String, Object>>) response.getBody().get("choices");
-                Map<String, Object> firstChoice = choices.get(0);
-                Map<String, Object> message = (Map<String, Object>) firstChoice.get("message");
-                return (String) message.get("content");
+            URL url = new URL(apiUrl);
+
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+
+            conn.setRequestMethod("POST");
+
+            conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+
+            conn.setDoOutput(true);
+
+
+
+// 1. 动态拼接文件上下文
+
+            String context = "";
+
+            if (attachedFileName != null && !attachedFileName.isEmpty()) {
+
+                context = String.format("【重要上下文】：用户已挂载数据文件，沙箱内路径为：/tmp/sandbox/%s。请在代码中直接读取此路径进行分析。\n\n", attachedFileName);
+
             }
-            throw new RuntimeException("API响应格式异常");
+
+            String finalUserMsg = context + "用户需求：" + userQuestion;
+
+
+
+// 2. 构建消息体
+
+            List<Map<String, String>> messages = new ArrayList<>();
+
+            messages.add(Map.of("role", "system", "content", SYSTEM_PROMPT));
+
+            messages.add(Map.of("role", "user", "content", finalUserMsg));
+
+
+
+            ObjectMapper mapper = new ObjectMapper();
+
+            Map<String, Object> body = new HashMap<>();
+
+            body.put("model", modelName);
+
+            body.put("stream", false);
+
+            body.put("messages", messages);
+
+            body.put("temperature", 0.1);
+
+
+
+            try (OutputStream os = conn.getOutputStream()) {
+
+                byte[] input = mapper.writeValueAsString(body).getBytes("utf-8");
+
+                os.write(input, 0, input.length);
+
+            }
+
+
+
+            if (conn.getResponseCode() == 200) {
+
+                BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "utf-8"));
+
+                StringBuilder response = new StringBuilder();
+
+                String responseLine;
+
+                while ((responseLine = br.readLine()) != null) {
+
+                    response.append(responseLine.trim());
+
+                }
+
+                JsonNode rootNode = mapper.readTree(response.toString());
+
+                return rootNode.path("choices").get(0).path("message").path("content").asText();
+
+            } else {
+
+                throw new RuntimeException("API 响应异常，状态码: " + conn.getResponseCode());
+
+            }
 
         } catch (Exception e) {
-            // 7. 更精细的错误处理
-            String errorMsg = String.format("调用AI模型失败。URL: %s, Model: %s, 错误: %s",
-                    apiUrl, modelName, e.getMessage());
-            throw new RuntimeException(errorMsg, e);
+
+            throw new RuntimeException("AI 代码生成失败: " + e.getMessage());
+
         }
+
     }
+
+
+
 }

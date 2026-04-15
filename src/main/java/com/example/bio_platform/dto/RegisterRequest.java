@@ -25,8 +25,8 @@ public class RegisterRequest {
     private String confirmPassword;
 
     @NotBlank(message = "角色不能为空")
-    @Pattern(regexp = "admin|teacher|student", message = "角色必须是admin、teacher或student")
-    @ApiModelProperty(value = "角色", required = true, example = "student")
+    @Pattern(regexp = "admin|user", message = "角色必须是admin、user")
+    @ApiModelProperty(value = "角色", required = true, example = "user")
     private String role;
 
     @Email(message = "邮箱格式不正确")

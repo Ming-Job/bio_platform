@@ -45,4 +45,6 @@ public interface CourseService extends IService<Course> {
 
     //  根据关键词检索相关课程
     List<Course> searchCoursesByKeywords(List<String> keywords);
+
+    Page<Course> getAdminCoursePage(Integer pageNum, Integer pageSize, String searchKey);
 }

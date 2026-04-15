@@ -78,6 +78,10 @@ public class File implements Serializable {
     @TableField("description")
     private String description;
 
+    @ApiModelProperty(value = "文件来源", example = "upload()")
+    @TableField("file_source")
+    private String fileSource;
+
     // ===================== 以下是计算字段，不映射到数据库 =====================
 
     @ApiModelProperty(value = "格式化后的文件大小", example = "1.0 GB")

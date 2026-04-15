@@ -250,4 +250,36 @@ public class CourseServiceImpl extends ServiceImpl<CourseMapper, Course> impleme
 
         return this.list(queryWrapper);
     }
+
+    @Override
+    public Page<Course> getAdminCoursePage(Integer pageNum, Integer pageSize, String searchKey) {
+        Page<Course> pageParam = new Page<>(pageNum, pageSize);
+        LambdaQueryWrapper<Course> wrapper = new LambdaQueryWrapper<>();
+
+        if (StringUtils.hasText(searchKey)) {
+            wrapper.like(Course::getTitle, searchKey);
+        }
+
+        // 按创建时间倒序排
+        wrapper.orderByDesc(Course::getCreatedAt);
+
+        // 1. 先查出基础的课程分页数据
+        Page<Course> coursePage = this.page(pageParam, wrapper);
+
+        // 2. 遍历结果，拿着 instructorId 去 User 表查名字
+        for (Course course : coursePage.getRecords()) {
+            if (course.getInstructorId() != null) {
+                User user = userService.getById(course.getInstructorId());
+                if (user != null && StringUtils.hasText(user.getUsername())) {
+                    course.setInstructorName(user.getUsername()); // 塞入真实名字
+                } else {
+                    course.setInstructorName("已注销管理员"); // 如果账号被删了的兜底
+                }
+            } else {
+                course.setInstructorName("系统管理员");
+            }
+        }
+
+        return coursePage;
+    }
 }

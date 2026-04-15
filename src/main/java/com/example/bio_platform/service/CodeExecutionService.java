@@ -31,10 +31,10 @@ public class CodeExecutionService {
     private static final long RESULT_EXPIRATION_HOURS = 24;
 
     /**
-     * 异步执行代码
+     * 异步执行代码 (🌟 升级：加入 fileName 参数)
      */
-    public CompletableFuture<ExecutionResult> executeAsync(String taskId, String code, String language) {
-        log.info("创建异步执行任务: taskId={}, language={}", taskId, language);
+    public CompletableFuture<ExecutionResult> executeAsync(String taskId, String code, String language, String fileName) {
+        log.info("创建异步执行任务: taskId={}, language={}, fileName={}", taskId, language, fileName);
 
         // 如果未提供 taskId，则生成一个
         if (taskId == null || taskId.trim().isEmpty()) {
@@ -56,7 +56,8 @@ public class CodeExecutionService {
         CompletableFuture<ExecutionResult> future = CompletableFuture.supplyAsync(() -> {
             try {
                 log.info("开始执行代码任务: {}", finalTaskId);
-                return executeInSandbox(finalTaskId, code, language);
+                // 🌟 核心：将 fileName 传递给下层沙箱
+                return executeInSandbox(finalTaskId, code, language, fileName);
             } catch (Exception e) {
                 log.error("执行代码任务失败: {}", finalTaskId, e);
                 ExecutionResult result = new ExecutionResult(finalTaskId, "error", "执行过程异常: " + e.getMessage());
@@ -141,10 +142,10 @@ public class CodeExecutionService {
     }
 
     /**
-     * 在沙箱中执行代码
+     * 在沙箱中执行代码 (🌟 升级：接收并传递 fileName 参数)
      */
-    private ExecutionResult executeInSandbox(String taskId, String code, String language) {
-        log.info("在沙箱中执行代码: taskId={}, language={}", taskId, language);
+    private ExecutionResult executeInSandbox(String taskId, String code, String language, String fileName) {
+        log.info("在沙箱中执行代码: taskId={}, language={}, fileName={}", taskId, language, fileName);
 
         // 检查Docker连接
         if (!dockerSandboxService.isDockerConnected()) {
@@ -161,11 +162,13 @@ public class CodeExecutionService {
         switch (language.toLowerCase()) {
             case "python":
                 log.info("执行 Python 代码，长度: {} 字符", code.length());
-                result = dockerSandboxService.executePython(code, taskId);
+                // 🌟 将 fileName 传入底层的 executePython
+                result = dockerSandboxService.executePython(code, taskId, fileName);
                 break;
             case "r":
                 log.info("执行 R 代码，长度: {} 字符", code.length());
-                result = dockerSandboxService.executeR(code, taskId);
+                // 🌟 将 fileName 传入底层的 executeR
+                result = dockerSandboxService.executeR(code, taskId, fileName);
                 break;
             default:
                 throw new IllegalArgumentException("不支持的编程语言: " + language);
@@ -287,12 +290,14 @@ public class CodeExecutionService {
 
     /**
      * 同步执行代码（阻塞）
+     * 🌟 升级：加入 fileName 参数
      */
-    public ExecutionResult executeSync(String taskId, String code, String language) {
-        log.info("同步执行代码: taskId={}, language={}", taskId, language);
+    public ExecutionResult executeSync(String taskId, String code, String language, String fileName) {
+        log.info("同步执行代码: taskId={}, language={}, fileName={}", taskId, language, fileName);
 
         try {
-            return executeInSandbox(taskId, code, language);
+            // 🌟 将 fileName 传递给下层沙箱
+            return executeInSandbox(taskId, code, language, fileName);
         } catch (Exception e) {
             log.error("同步执行代码失败", e);
             ExecutionResult errorResult = new ExecutionResult(taskId, "error", "执行失败: " + e.getMessage());

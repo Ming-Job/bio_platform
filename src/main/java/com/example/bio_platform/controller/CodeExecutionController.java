@@ -28,6 +28,8 @@ public class CodeExecutionController {
         private String code;
         private String language; // python / r
         private String taskId;   // 可选
+        // 🌟 核心补丁：增加 fileName 字段，用来接收前端传来的云端数据集名称
+        private String fileName;
     }
 
     /**
@@ -39,9 +41,11 @@ public class CodeExecutionController {
         String code = request.getCode();
         String language = request.getLanguage();
         String taskId = request.getTaskId();
+        // 🌟 提取 fileName
+        String fileName = request.getFileName();
 
-        log.info("收到异步代码执行请求: language={}, codeLength={}",
-                language, code != null ? code.length() : 0);
+        log.info("收到异步代码执行请求: language={}, codeLength={}, fileName={}",
+                language, code != null ? code.length() : 0, fileName);
 
         // 参数验证
         if (code == null || code.trim().isEmpty()) {
@@ -64,8 +68,9 @@ public class CodeExecutionController {
         }
 
         // 启动异步执行
+        // 🌟 核心补丁：将 fileName 传递给 Service
         CompletableFuture<ExecutionResult> future = codeExecutionService.executeAsync(
-                taskId, code, language.toLowerCase()
+                taskId, code, language.toLowerCase(), fileName
         );
 
         // 返回任务信息
@@ -88,8 +93,10 @@ public class CodeExecutionController {
         String code = request.getCode();
         String language = request.getLanguage();
         String taskId = request.getTaskId();
+        // 🌟 提取 fileName
+        String fileName = request.getFileName();
 
-        log.info("收到同步代码执行请求: language={}", language);
+        log.info("收到同步代码执行请求: language={}, fileName={}", language, fileName);
 
         // 参数验证
         if (code == null || code.trim().isEmpty()) {
@@ -112,7 +119,8 @@ public class CodeExecutionController {
         }
 
         // 同步执行
-        ExecutionResult result = codeExecutionService.executeSync(taskId, code, language.toLowerCase());
+        // 🌟 核心补丁：将 fileName 传递给 Service
+        ExecutionResult result = codeExecutionService.executeSync(taskId, code, language.toLowerCase(), fileName);
         return ResponseEntity.ok(result);
     }
 

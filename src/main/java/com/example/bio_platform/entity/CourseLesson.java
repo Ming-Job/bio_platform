@@ -41,9 +41,6 @@ public class CourseLesson implements Serializable {
     @ApiModelProperty(value = "视频播放地址")
     private String videoUrl;
 
-    @ApiModelProperty(value = "关联的分析工具ID")
-    private Long relatedToolId;
-
     @ApiModelProperty(value = "是否支持免费试看：0-否，1-是")
     private Integer isFreePreview;
 

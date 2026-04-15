@@ -66,7 +66,15 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
+  bio-redis:
+    image: redis:latest
+    container_name: bio-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - D:/docker_data/redis:/data  # 数据持久化，防止重启后数据丢失
+    command: redis-server --appendonly yes # 开启 AOF 持久化，更安全
+    restart: always
 volumes:
   r-temp-data:
     driver: local

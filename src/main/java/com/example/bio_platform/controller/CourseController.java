@@ -5,6 +5,7 @@ import com.example.bio_platform.common.Result; // 请替换为你实际的 Resul
 import com.example.bio_platform.entity.UserCourseEnrollment;
 import com.example.bio_platform.service.CourseService;
 import com.example.bio_platform.service.UserCourseEnrollmentService;
+import com.example.bio_platform.utils.CourseCoverUploadUtil;
 import com.example.bio_platform.vo.CourseDetailVO;
 import com.example.bio_platform.vo.CourseVO;
 import com.example.bio_platform.vo.MyCourseVO;
@@ -15,7 +16,10 @@ import io.swagger.annotations.ApiImplicitParams;
 import io.swagger.annotations.ApiOperation;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
+import javax.annotation.Resource;
+import java.io.IOException;
 import java.util.List;
 
 @Api(tags = "课程中心接口")
@@ -23,10 +27,116 @@ import java.util.List;
 @RequestMapping("/api/courses")
 public class CourseController {
 
-    @Autowired
+    @Resource
     private CourseService courseService;
-    @Autowired
+
+    @Resource
     private UserCourseEnrollmentService enrollmentService;
+
+    @Resource
+    private CourseCoverUploadUtil courseCoverUploadUtil;
+
+    // 🌟 1. 注入视频存放配置
+    @org.springframework.beans.factory.annotation.Value("${course.video.upload-relative-path:uploads/video/}")
+    private String videoUploadPath;
+
+    @org.springframework.beans.factory.annotation.Value("${course.video.access-prefix:/video/}")
+    private String videoAccessPrefix;
+
+    // 🌟 @PostMapping，路径为 /video/upload
+    @ApiOperation(value = "上传课程视频")
+    @PostMapping("/video/upload")
+    public Result<String> uploadCourseVideo(@RequestParam("file") MultipartFile file) {
+        try {
+            // 1. 校验文件后缀
+            String originalFilename = file.getOriginalFilename();
+            if (originalFilename == null || (!originalFilename.toLowerCase().endsWith(".mp4") && !originalFilename.toLowerCase().endsWith(".avi"))) {
+                return Result.error("仅支持 MP4 / AVI 格式的视频");
+            }
+
+            // 🌟 核心修改：利用 user.dir 获取项目绝对路径，彻底杜绝 Tomcat 瞎拼接
+            String absolutePath = System.getProperty("user.dir") + java.io.File.separator + videoUploadPath;
+            java.io.File dir = new java.io.File(absolutePath);
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+
+            // 3. 生成唯一文件名
+            String newFileName = java.util.UUID.randomUUID().toString().replace("-", "") + ".mp4";
+            java.io.File targetFile = new java.io.File(dir, newFileName);
+
+            // 4. 保存文件到本地 (此时传入的是绝对路径，安全通过！)
+            file.transferTo(targetFile);
+
+            // 5. 返回相对路径给前端
+            return Result.success("视频上传成功", videoAccessPrefix + newFileName);
+
+        } catch (java.io.IOException e) {
+            e.printStackTrace();
+            return Result.error("视频存储失败，服务器异常");
+        }
+    }
+
+    // 🌟 1. 注入文档存放配置
+    @org.springframework.beans.factory.annotation.Value("${course.document.upload-relative-path:uploads/document/}")
+    private String documentUploadPath;
+
+    @org.springframework.beans.factory.annotation.Value("${course.document.access-prefix:/document/}")
+    private String documentAccessPrefix;
+
+    // 🌟 2. 文档上传接口
+    @ApiOperation(value = "上传课程文档(PPT/PDF)")
+    @PostMapping("/document/upload")
+    public Result<String> uploadCourseDocument(@RequestParam("file") MultipartFile file) {
+        try {
+            // 校验文件后缀
+            String originalFilename = file.getOriginalFilename();
+            if (originalFilename == null) {
+                return Result.error("文件名不能为空");
+            }
+            String lowerName = originalFilename.toLowerCase();
+            if (!lowerName.endsWith(".ppt") && !lowerName.endsWith(".pptx") && !lowerName.endsWith(".pdf")) {
+                return Result.error("仅支持 PPT, PPTX 或 PDF 格式的文档");
+            }
+
+            // 利用 user.dir 获取项目绝对路径，防止路径拼接报错
+            String absolutePath = System.getProperty("user.dir") + java.io.File.separator + documentUploadPath;
+            java.io.File dir = new java.io.File(absolutePath);
+            if (!dir.exists()) {
+                dir.mkdirs();
+            }
+
+            // 生成唯一文件名，并保留原始后缀
+            String suffix = originalFilename.substring(originalFilename.lastIndexOf("."));
+            String newFileName = java.util.UUID.randomUUID().toString().replace("-", "") + suffix;
+            java.io.File targetFile = new java.io.File(dir, newFileName);
+
+            // 保存文件到本地
+            file.transferTo(targetFile);
+
+            // 返回相对路径给前端
+            return Result.success("文档上传成功", documentAccessPrefix + newFileName);
+
+        } catch (java.io.IOException e) {
+            e.printStackTrace();
+            return Result.error("文档存储失败，服务器异常");
+        }
+    }
+    /**
+     * 课程封面上传接口
+     */
+    @PostMapping("/cover/upload")
+    public Result<String> uploadCourseCover(@RequestParam("cover") MultipartFile file) {
+        try {
+            String coverPath = courseCoverUploadUtil.upload(file);
+            return Result.success("上传成功", coverPath);
+        } catch (RuntimeException e) {
+            return Result.error(e.getMessage());
+        } catch (IOException e) {
+            e.printStackTrace();
+            return Result.error("服务器文件读写异常");
+        }
+    }
 
     @ApiOperation(value = "分页查询前端课程列表")
     @ApiImplicitParams({

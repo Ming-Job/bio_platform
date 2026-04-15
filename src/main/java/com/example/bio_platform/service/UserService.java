@@ -107,5 +107,16 @@ public interface UserService extends IService<User> {
 
     String getUsername(Long userId);
 
+    /**
+     * 统计今天新注册的用户数量
+     */
+    long countTodayNewUsers();
+
+    /**
+     * 真实聚合：获取最近 N 天的用户增长图表数据
+     * 返回结构：{ dates: [...], newUsers: [...], totalUsers: [...] }
+     */
+    Map<String, Object> getRealUserGrowthChart(int days);
+
 
 }

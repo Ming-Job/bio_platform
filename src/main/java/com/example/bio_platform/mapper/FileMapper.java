@@ -44,5 +44,10 @@ public interface FileMapper extends BaseMapper<File> {
     @Select("SELECT * FROM bio_files WHERE id = #{id} AND user_id = #{userId} AND status != 'deleted'")
     File selectByIdAndUserId(@Param("id") Long id, @Param("userId") Long userId);
 
+    @Select("SELECT project_id, COUNT(1) AS file_count, SUM(size_bytes) AS total_size " +
+            "FROM bio_files " +
+            "WHERE user_id = #{userId} AND project_id IS NOT NULL " +
+            "GROUP BY project_id")
+    List<Map<String, Object>> countFileStatsGroupByProject(@Param("userId") Long userId);
 
 }

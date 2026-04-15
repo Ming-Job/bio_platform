@@ -24,6 +24,7 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 @Slf4j
@@ -408,9 +409,66 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         return token;
     }
 
-    /**
-     * 上传头像
-    * */
+    @Override
+    public long countTodayNewUsers() {
+        // 核心：查询 create_time >= 今天的 00:00:00
+        LocalDateTime todayStart = LocalDateTime.now().withHour(0).withMinute(0).withSecond(0).withNano(0);
+        QueryWrapper<User> wrapper = new QueryWrapper<>();
+        wrapper.ge("create_time", todayStart);
+        return this.count(wrapper);
+    }
+
+    @Override
+    public Map<String, Object> getRealUserGrowthChart(int days) {
+        // 1. 查询在此之前的所有老用户总数作为基数
+        LocalDateTime startDate = LocalDateTime.now().minusDays(days - 1).withHour(0).withMinute(0).withSecond(0);
+        QueryWrapper<User> baseWrapper = new QueryWrapper<>();
+        baseWrapper.lt("create_time", startDate);
+        long baseTotal = this.count(baseWrapper);
+
+        // 2. 查出这 N 天内的所有用户，并只查 create_time 字段以提升性能
+        QueryWrapper<User> rangeWrapper = new QueryWrapper<>();
+        rangeWrapper.ge("create_time", startDate).select("create_time");
+        List<User> recentUsers = this.list(rangeWrapper);
+
+        // 3. 在 Java 内存中按日期分组聚合 (这是跨数据库最安全的做法)
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("M/d");
+        Map<String, Integer> dailyCountMap = new HashMap<>();
+
+        for (User user : recentUsers) {
+            if (user.getCreateTime() != null) {
+                String dateStr = user.getCreateTime().format(formatter);
+                dailyCountMap.put(dateStr, dailyCountMap.getOrDefault(dateStr, 0) + 1);
+            }
+        }
+
+        // 4. 按连续的日期序列组装结果
+        List<String> dates = new ArrayList<>();
+        List<Integer> newUsers = new ArrayList<>();
+        List<Integer> totalUsers = new ArrayList<>();
+
+        long currentTotal = baseTotal;
+
+        for (int i = days - 1; i >= 0; i--) {
+            LocalDateTime date = LocalDateTime.now().minusDays(i);
+            String dateStr = date.format(formatter);
+
+            int newCount = dailyCountMap.getOrDefault(dateStr, 0);
+            currentTotal += newCount;
+
+            dates.add(dateStr);
+            newUsers.add(newCount);
+            totalUsers.add((int) currentTotal); // ECharts 通常处理 int 即可
+        }
+
+        // 5. 封装为前端需要的格式
+        Map<String, Object> result = new HashMap<>();
+        result.put("dates", dates);
+        result.put("newUsers", newUsers);
+        result.put("totalUsers", totalUsers);
+
+        return result;
+    }
 
 
 

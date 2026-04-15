@@ -64,4 +64,10 @@ public class Course implements Serializable {
     @TableField(value = "updated_at", fill = FieldFill.INSERT_UPDATE)
     @JsonFormat(pattern = "yyyy-MM-dd HH:mm:ss", timezone = "GMT+8")
     private LocalDateTime updatedAt;
+
+    /**
+     * 临时字段：用于展示创建者的名字（数据库中无此字段）
+     */
+    @TableField(exist = false)
+    private String instructorName;
 }
