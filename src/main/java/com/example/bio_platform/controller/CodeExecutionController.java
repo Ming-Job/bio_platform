@@ -9,7 +9,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
-
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -26,9 +25,8 @@ public class CodeExecutionController {
     @Data
     public static class CodeRequest {
         private String code;
-        private String language; // python / r
-        private String taskId;   // 可选
-        // 🌟 核心补丁：增加 fileName 字段，用来接收前端传来的云端数据集名称
+        private String language;
+        private String taskId;
         private String fileName;
     }
 
@@ -41,12 +39,9 @@ public class CodeExecutionController {
         String code = request.getCode();
         String language = request.getLanguage();
         String taskId = request.getTaskId();
-        // 🌟 提取 fileName
         String fileName = request.getFileName();
-
         log.info("收到异步代码执行请求: language={}, codeLength={}, fileName={}",
                 language, code != null ? code.length() : 0, fileName);
-
         // 参数验证
         if (code == null || code.trim().isEmpty()) {
             return ResponseEntity.badRequest().body(Map.of(
@@ -54,25 +49,20 @@ public class CodeExecutionController {
                     "status", "error"
             ));
         }
-
-        if (language == null || (!language.equalsIgnoreCase("python") && !language.equalsIgnoreCase("r"))) {
+        if (language == null || !language.equalsIgnoreCase("python") ) {
             return ResponseEntity.badRequest().body(Map.of(
-                    "error", "不支持的语言，只支持 python 和 r",
+                    "error", "不支持的语言，只支持 python",
                     "status", "error"
             ));
         }
-
         // 生成任务ID
         if (taskId == null || taskId.trim().isEmpty()) {
             taskId = generateTaskId(language);
         }
-
         // 启动异步执行
-        // 🌟 核心补丁：将 fileName 传递给 Service
         CompletableFuture<ExecutionResult> future = codeExecutionService.executeAsync(
                 taskId, code, language.toLowerCase(), fileName
         );
-
         // 返回任务信息
         return ResponseEntity.ok(Map.of(
                 "success", true,
@@ -82,6 +72,40 @@ public class CodeExecutionController {
                 "pollUrl", "/api/code/result/" + taskId,
                 "timestamp", System.currentTimeMillis()
         ));
+    }
+
+    /**
+     * 获取执行结果
+     */
+    @GetMapping("/result/{taskId}")
+    @ApiOperation("获取执行结果")
+    public ResponseEntity<ExecutionResult> getResult(@PathVariable String taskId) {
+        log.info("获取执行结果: {}", taskId);
+        ExecutionResult result = codeExecutionService.getExecutionResult(taskId);
+
+        if (result == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        return ResponseEntity.ok(result);
+    }
+
+    /**
+     * 轮询接口（兼容老版本）
+     */
+    @GetMapping("/poll/{taskId}")
+    @ApiOperation("轮询执行结果")
+    public ResponseEntity<ExecutionResult> pollResult(@PathVariable String taskId) {
+        return getResult(taskId);
+    }
+
+    /**
+     * 生成任务ID
+     */
+    private String generateTaskId(String language) {
+        return language.toLowerCase() + "_" +
+                System.currentTimeMillis() + "_" +
+                UUID.randomUUID().toString().substring(0, 8);
     }
 
     /**
@@ -122,39 +146,5 @@ public class CodeExecutionController {
         // 🌟 核心补丁：将 fileName 传递给 Service
         ExecutionResult result = codeExecutionService.executeSync(taskId, code, language.toLowerCase(), fileName);
         return ResponseEntity.ok(result);
-    }
-
-    /**
-     * 获取执行结果
-     */
-    @GetMapping("/result/{taskId}")
-    @ApiOperation("获取执行结果")
-    public ResponseEntity<ExecutionResult> getResult(@PathVariable String taskId) {
-        log.info("获取执行结果: {}", taskId);
-        ExecutionResult result = codeExecutionService.getExecutionResult(taskId);
-
-        if (result == null) {
-            return ResponseEntity.notFound().build();
-        }
-
-        return ResponseEntity.ok(result);
-    }
-
-    /**
-     * 轮询接口（兼容老版本）
-     */
-    @GetMapping("/poll/{taskId}")
-    @ApiOperation("轮询执行结果")
-    public ResponseEntity<ExecutionResult> pollResult(@PathVariable String taskId) {
-        return getResult(taskId);
-    }
-
-    /**
-     * 生成任务ID
-     */
-    private String generateTaskId(String language) {
-        return language.toLowerCase() + "_" +
-                System.currentTimeMillis() + "_" +
-                UUID.randomUUID().toString().substring(0, 8);
     }
 }

@@ -26,7 +26,6 @@ public class HardwareMonitorTask {
     // 核心原理：用于保存上一次采集的 CPU 滴答数
     private long[] prevTicks = new long[CentralProcessor.TickType.values().length];
 
-    // 本地缓存：前端 HTTP 接口直接读这个 Map，永远不会造成线程阻塞
     private Map<String, Object> currentHardwareStats = new HashMap<>();
 
     public HardwareMonitorTask() {
@@ -49,6 +48,8 @@ public class HardwareMonitorTask {
         try {
             // 1. 获取 CPU 使用率 (基于前后两次滴答数的差值精准计算)
             CentralProcessor processor = hal.getProcessor();
+            // 代码在类初始化时记录了一次 prevTicks，然后在每次执行时，对比当前 Ticks 和 3 秒前的 prevTicks 的差值。
+            // 算出了过去 3 秒内 CPU 使用率
             double cpuLoad = processor.getSystemCpuLoadBetweenTicks(prevTicks) * 100;
             prevTicks = processor.getSystemCpuLoadTicks(); // 记录本次滴答数，留给下次用
             stats.put("cpu", formatDouble(cpuLoad));
@@ -57,18 +58,26 @@ public class HardwareMonitorTask {
             GlobalMemory memory = hal.getMemory();
             long totalMemory = memory.getTotal();
             long availableMemory = memory.getAvailable();
+            // 用（总的内存-可用的内存）/ 总的内存
             double memoryUsage = totalMemory == 0 ? 0 : ((double) (totalMemory - availableMemory) / totalMemory) * 100;
             stats.put("memory", formatDouble(memoryUsage));
 
-            // 3. 获取磁盘/OSS 存储使用率 (遍历所有本地磁盘累加计算)
+            // 3. 获取特定的磁盘存储使用率 (仅针对 D 盘)
             FileSystem fileSystem = os.getFileSystem();
-            long totalStorage = 0;
-            long usableStorage = 0;
+            long dTotal = 0;
+            long dUsable = 0;
+
             for (OSFileStore fs : fileSystem.getFileStores()) {
-                totalStorage += fs.getTotalSpace();
-                usableStorage += fs.getUsableSpace();
+                // 在 Windows 下，getMount() 通常返回 "D:\"
+                if (fs.getMount().startsWith("D:")) {
+                    dTotal = fs.getTotalSpace();
+                    dUsable = fs.getUsableSpace();
+                    break; // 找到 D 盘后直接跳出循环
+                }
             }
-            double storageUsage = totalStorage == 0 ? 0 : ((double) (totalStorage - usableStorage) / totalStorage) * 100;
+
+            // 计算 D 盘使用率
+            double storageUsage = dTotal == 0 ? 0 : ((double) (dTotal - dUsable) / dTotal) * 100;
             stats.put("storage", formatDouble(storageUsage));
 
             // 4. 将最新数据无缝切换到缓存中

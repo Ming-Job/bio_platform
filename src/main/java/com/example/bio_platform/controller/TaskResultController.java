@@ -19,17 +19,6 @@ public class TaskResultController {
     @Autowired
     private AnalysisTaskService analysisTaskService;
 
-    /**
-     * GET /api/task/result/expression/{taskId}
-     * 提供给前端 Echarts 图表渲染的数据接口
-     */
-    @GetMapping("/expression/{taskId}")
-    public List<TaskGeneExpression> getGeneExpression(@PathVariable Long taskId) {
-        // 在严谨的工程中，这里可以统一包装一个 Result<T> 返回体
-        // 为了快速联调，这里直接返回 List 供前端解析
-        return analysisTaskService.getGeneExpressionData(taskId);
-    }
-
 
     /**
      * 获取指定任务的 GWAS 曼哈顿图数据

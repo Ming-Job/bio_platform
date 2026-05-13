@@ -257,35 +257,6 @@ create table analysis_task_file
 )
     comment '分析任务输入文件清单';
 
-create table bio_file_metadata
-(
-    id              bigint auto_increment comment '元数据ID'
-        primary key,
-    file_id         bigint                               not null comment '关联的文件ID',
-    sample_id       varchar(100)                         null comment '样本ID',
-    sample_name     varchar(200)                         null comment '样本名称',
-    organism        varchar(100)                         null comment '生物体',
-    experiment_type varchar(50)                          null comment '实验类型: RNA-Seq, WGS, ChIP-Seq等',
-    paired_end      tinyint(1) default 0                 null comment '是否双端测序',
-    created_at      datetime   default CURRENT_TIMESTAMP null comment '创建时间',
-    updated_at      datetime   default CURRENT_TIMESTAMP null on update CURRENT_TIMESTAMP comment '更新时间',
-    constraint uk_file_id
-        unique (file_id),
-    constraint fk_metadata_file
-        foreign key (file_id) references bio_files (id)
-            on update cascade on delete cascade
-)
-    comment '文件元数据扩展表';
-
-create index idx_experiment_type
-    on bio_file_metadata (experiment_type);
-
-create index idx_organism
-    on bio_file_metadata (organism);
-
-create index idx_sample_id
-    on bio_file_metadata (sample_id);
-
 create table bio_file_uploads
 (
     id              bigint auto_increment comment '上传记录ID'
@@ -350,26 +321,6 @@ create index idx_user_id
 
 create index idx_project_user
     on project (user_id);
-
-create table project_task
-(
-    id         bigint auto_increment
-        primary key,
-    project_id bigint                             not null comment '项目ID',
-    task_id    bigint                             not null comment '任务ID',
-    created_at datetime default CURRENT_TIMESTAMP null comment '创建时间',
-    constraint uk_project_task
-        unique (project_id, task_id),
-    constraint project_task_ibfk_1
-        foreign key (project_id) references project (id)
-            on delete cascade,
-    constraint project_task_ibfk_2
-        foreign key (task_id) references analysis_task (id)
-            on delete cascade
-);
-
-create index task_id
-    on project_task (task_id);
 
 create index idx_last_login
     on user (last_login_time);

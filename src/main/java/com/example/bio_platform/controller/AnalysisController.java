@@ -66,17 +66,16 @@ public class AnalysisController {
     public Map<String, Object> submitTask(@RequestBody TaskSubmitDTO dto,
                                           @RequestHeader(value = "userId", defaultValue = "6") Long userId) {
 
-        // 1. 先把任务存进数据库，拿到任务 ID
+        // 先把任务存进数据库，拿到任务 ID
         Long taskId = analysisTaskService.submitTask(dto, userId);
 
-        // 2. 🌟 核心智能路由：查出当前跑的是什么流程
+        // 查出当前跑的是什么流程
         AnalysisPipeline pipeline = pipelineMapper.selectById(dto.getPipelineId());
         if (pipeline != null) {
             String category = pipeline.getCategory();
             String name = pipeline.getName() != null ? pipeline.getName().toLowerCase() : "";
             String paramsJson = dto.getParams(); // 获取前端传来的动态参数
 
-            // 🌟 核心修改：纯净版三路分发
             if ("microbiome".equalsIgnoreCase(category) || name.contains("16s") || name.contains("qiime")) {
                 log.info("🟢 路由匹配: 16S 扩增子分析引擎");
                 analysisTaskService.simulateMicrobiomeExecution(taskId);
@@ -86,7 +85,6 @@ public class AnalysisController {
                 analysisTaskService.simulateGwasExecution(taskId);
             }
             else {
-                // 🌟 直接霸气接管！只要是转录组，全部走端到端多样本流水线！
                 log.info("🟣 路由匹配: RNA-Seq 端到端超级复合引擎 (排队比对 + DESeq2)");
                 analysisTaskService.simulateRnaSeqExecution(taskId);
             }
@@ -96,6 +94,7 @@ public class AnalysisController {
         data.put("taskId", taskId);
         return success(data);
     }
+
     @ApiOperation("获取分析控制台大盘统计与任务队列")
     @GetMapping("/dashboard")
     public Map<String, Object> getDashboard(
@@ -183,40 +182,7 @@ public class AnalysisController {
         return success(result);
     }
 
-    @ApiOperation("触发多样本差异表达分析 (集成 Python DESeq2沙盒)")
-    @PostMapping("/tasks/diff")
-    public Map<String, Object> performDiffAnalysis(@RequestBody Map<String, List<Long>> params) {
-        List<Long> controlTaskIds = params.get("controlTaskIds");
-        List<Long> treatTaskIds = params.get("treatTaskIds");
-        Map<String, Object> errorRes = new HashMap<>();
 
-        if (controlTaskIds == null || treatTaskIds == null) {
-            errorRes.put("code", 400);
-            errorRes.put("message", "参数缺失：必须同时提供对照组和处理组数组");
-            return errorRes;
-        }
-        if (controlTaskIds.size() < 3 || treatTaskIds.size() < 3) {
-            errorRes.put("code", 400);
-            errorRes.put("message", "学术规范拦截：真实的 DESeq2 计算要求至少 3 个生物学重复样本");
-            return errorRes;
-        }
-
-        try {
-            log.info("前端发起多样本分析请求 | Control组: {}, Treat组: {}", controlTaskIds, treatTaskIds);
-            analysisTaskService.performMultiSampleDiffAnalysis(controlTaskIds, treatTaskIds);
-            return success("Python DESeq2 矩阵运算完毕，折叠倍数与 P-value 已物理落盘！");
-        } catch (RuntimeException e) {
-            log.warn("多样本差异分析业务阻断: {}", e.getMessage());
-            errorRes.put("code", 500);
-            errorRes.put("message", e.getMessage());
-            return errorRes;
-        } catch (Exception e) {
-            log.error("多样本差异分析发生系统级异常", e);
-            errorRes.put("code", 500);
-            errorRes.put("message", "系统繁忙，Python 容器调度失败，请联系管理员");
-            return errorRes;
-        }
-    }
 
     @ApiOperation("获取差异表达分析结果 (用于绘制真实火山图)")
     @GetMapping("/tasks/diff/result")

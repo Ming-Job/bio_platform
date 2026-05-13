@@ -20,7 +20,7 @@ import java.util.Map;
 @Service
 public class AiServiceImpl {
 
-    // application.properties 注入配置
+    // 从配置文件里注入配置
     @Value("${ai.deepseek.api-url}")
     private String apiUrl;
 
@@ -30,8 +30,10 @@ public class AiServiceImpl {
     @Value("${ai.deepseek.model}")
     private String modelName;
 
-    // 流式处理方法
-// 🌟 1. 方法签名增加 courseContext 参数（前端传过来的当前章节内容/标题）
+   /**
+    *   流式处理方法
+    *  方法签名增加 courseContext 参数（前端传过来的当前章节内容/标题）
+    */
     public void streamBioAi(String courseContext, List<Map<String, String>> historyMessages, ResponseBodyEmitter emitter) {
         try {
             URL url = new URL(apiUrl);
@@ -41,51 +43,48 @@ public class AiServiceImpl {
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
             conn.setDoOutput(true);
 
-            // 1. 构建动态提示词
+            // 构建动态提示词
             List<Map<String, String>> messages = new ArrayList<>();
             Map<String, String> systemMsg = new HashMap<>();
             systemMsg.put("role", "system");
 
-            // 🌟 2. 核心大招：把上下文动态拼接到 Prompt 中，真正实现“上下文感知”
+            // 将课程内容拼接到提示词当中，防偏题
             String dynamicPrompt = "你是一个专属的生物信息学AI助教。" +
                     "学生目前正在学习的课程章节上下文是：【" + courseContext + "】。" +
                     "请务必结合该章节的背景知识，用专业、严谨且易懂的中文解答学生的提问。" +
                     "遇到代码请给出示例。保持回答精炼。如果学生的问题偏离了该课程主题，请委婉地引导回课程内容。";
-
             systemMsg.put("content", dynamicPrompt);
             messages.add(systemMsg);
 
             // 加上用户的历史提问记录
             messages.addAll(historyMessages);
 
-            // 2. 构建 JSON (stream = true)
             ObjectMapper mapper = new ObjectMapper();
             Map<String, Object> body = new HashMap<>();
             body.put("model", modelName);
-            body.put("stream", true);
+            body.put("stream", true); // 流式输出
             body.put("messages", messages);
-            // 🌟 可选：把温度调到 0.4 左右，让助教的语气既严谨又有一定的讲课亲和力
+            // 把温度调到 0.4 左右，让ai既严谨又有亲和力
             body.put("temperature", 0.4);
 
             String jsonInputString = mapper.writeValueAsString(body);
-
             try (OutputStream os = conn.getOutputStream()) {
                 byte[] input = jsonInputString.getBytes("utf-8");
                 os.write(input, 0, input.length);
             }
-
             if (conn.getResponseCode() != 200) {
                 emitter.send("\n[AI 接口响应失败，状态码: " + conn.getResponseCode() + "]");
                 emitter.complete();
                 return;
             }
-
-            // 3. 读取流并实时发送给前端（下方代码保持你原来的逻辑完全不变）
+            // 读取流并实时发送给前端
             BufferedReader br = new BufferedReader(new InputStreamReader(conn.getInputStream(), "utf-8"));
             String responseLine;
             while ((responseLine = br.readLine()) != null) {
+                // 在标准的 SSE 协议中，服务器推过来的有效数据行，前面必须强制以 data:  开头
                 if (responseLine.startsWith("data: ")) {
                     String data = responseLine.substring(6).trim();
+                    // 大模型 API有一个行业公认的约定：当一段流式对话彻底结束时，它会发送一条极其特殊的报文，内容就是单纯的 [DONE]
                     if ("[DONE]".equals(data)) {
                         emitter.complete();
                         break;
@@ -94,11 +93,11 @@ public class AiServiceImpl {
                         JsonNode node = mapper.readTree(data);
                         JsonNode choices = node.get("choices");
                         if (choices != null && choices.isArray() && choices.size() > 0) {
-                            JsonNode delta = choices.get(0).get("delta");
+                            JsonNode delta = choices.get(0).get("delta");  // delta 增量 （流式请求返回的节点）
                             if (delta != null && delta.has("content")) {
                                 String content = delta.get("content").asText();
                                 System.out.print(content); // 后端继续打印监控
-                                emitter.send(content);     // 核心：推给前端
+                                emitter.send(content);     // 推送给前端
                             }
                         }
                     } catch (Exception ignored) {
@@ -114,9 +113,9 @@ public class AiServiceImpl {
         }
     }
 
-    // ==========================================
-    // 🌟 终极增强版：智能文件探针大模型推理
-    // ==========================================
+    /**
+     *   根据用户挂载的文件，通过读取文件的前五行特征，给出需求提示词
+     * */
     public List<String> generateSmartPrompts(String fileName, String fileHeader) {
         try {
             URL url = new URL(apiUrl);
@@ -168,10 +167,9 @@ public class AiServiceImpl {
                 JsonNode rootNode = mapper.readTree(response.toString());
                 String aiReply = rootNode.path("choices").get(0).path("message").path("content").asText();
 
-                // 🌟 强力监控：看看大模型到底回了什么鬼东西
                 System.out.println("【大模型原始回复】: " + aiReply);
 
-                // 🌟 工业级暴力截取：无视大模型的任何废话，强行抠出 [ ] 里面的内容
+                // 强行拆解 [ ] 里面的内容
                 int startIndex = aiReply.indexOf('[');
                 int endIndex = aiReply.lastIndexOf(']');
 
@@ -199,9 +197,8 @@ public class AiServiceImpl {
     }
 
     // ==========================================
-    // 🌟 基于真实课程库的语义级 AI 推荐引擎
+    // 基于课程表的语义级 AI 推荐引擎
     // ==========================================
-
     public Map<String, Object> recommendCoursesFromCatalog(String userQuery, List<Map<String, Object>> simpleCourseCatalog) {
         Map<String, Object> finalResult = new HashMap<>();
         finalResult.put("ids", new ArrayList<Long>());
@@ -222,7 +219,7 @@ public class AiServiceImpl {
             Map<String, String> systemMsg = new HashMap<>();
             systemMsg.put("role", "system");
 
-            // 🌟 核心修改：改变 Prompt，逼迫 AI 输出结构化的 JSON 对象
+
             systemMsg.put("content", "你是一个极其专业的生物信息学课程推荐助手。我会给你一份我平台真实的【课程目录】(包含id, title, desc)。\n" +
                     "请深刻理解用户的学习需求，并从目录中挑选出最匹配的 1 到 3 门课程，同时给出专业的推荐理由。\n" +
                     "⚠️ 绝对红线：\n" +
@@ -259,7 +256,6 @@ public class AiServiceImpl {
                 JsonNode rootNode = mapper.readTree(response.toString());
                 String aiReply = rootNode.path("choices").get(0).path("message").path("content").asText();
 
-                // 暴力清洗，防止大模型抽风带上 ```json
                 int startIndex = aiReply.indexOf('{');
                 int endIndex = aiReply.lastIndexOf('}');
 
@@ -267,7 +263,6 @@ public class AiServiceImpl {
                     String cleanJson = aiReply.substring(startIndex, endIndex + 1);
                     JsonNode replyNode = mapper.readTree(cleanJson);
 
-                    // 🌟 提取 IDs 数组和 Reason 字符串
                     if (replyNode.has("ids")) {
                         List<Long> ids = mapper.convertValue(replyNode.get("ids"), new com.fasterxml.jackson.core.type.TypeReference<List<Long>>(){});
                         finalResult.put("ids", ids);
